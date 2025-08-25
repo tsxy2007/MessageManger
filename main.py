@@ -44,9 +44,7 @@ class FragmentedMessageServer:
             accept_thread = threading.Thread(target=self.accept_connections, daemon=True)
             accept_thread.start()
             
-            # 启动服务器发送消息线程
-            send_thread = threading.Thread(target=self.send_messages_to_clients, daemon=True)
-            send_thread.start()
+            # 移除自动发送消息线程，改为被动回复
             
             while self.is_running:
                 cmd = input("输入 'exit' 关闭服务器: ")
@@ -81,17 +79,6 @@ class FragmentedMessageServer:
     def handle_client(self, client_socket, client_address):
         """处理客户端发送的分片消息"""
         try:
-            # 发送欢迎消息（使用分块发送）
-            # hello = {
-            #     "Type":"Heartbeat",
-            #     "Data":"12312312"
-            # }
-            # welcome_msg = json.dumps( hello,
-            #                         ensure_ascii=False,  # 中文不转义，体积更小
-            #                         separators=(',', ':'),  # 去除键值对和元素间的空格
-            #                         indent=None  # 无缩进（默认，但显式指定更清晰）
-            #                         )
-            # self.send_fragmented_message(client_socket, welcome_msg.encode('utf-8'))
             
             while self.is_running:
                 # 1. 接收消息头部
@@ -202,35 +189,21 @@ class FragmentedMessageServer:
                 message_str = full_message.decode('utf-8')
                 print(f"解析为字符串: {message_str}")
                 
-                # 发送欢迎消息（使用分块发送）
-                hello = {
-                "Type":"Heartbeat",
-                "Data":"12312312"
-                }
-                welcome_msg = json.dumps( hello,
-                                ensure_ascii=False,  # 中文不转义，体积更小
-                                separators=(',', ':'),  # 去除键值对和元素间的空格
-                                indent=None  # 无缩进（默认，但显式指定更清晰）
-                                )
-                self.send_fragmented_message(client_socket, welcome_msg.encode('utf-8'))
-                # json_data = json.loads(message_str)
-                # msgType = json_data["Type"]
-                # if msgType == "Heartbeat":
-                #     # 发送欢迎消息（使用分块发送）
-                #     hello = {
-                #     "Type":"Heartbeat",
-                #     "Data":"12312312"
-                #     }
-                #     welcome_msg = json.dumps( hello,
-                #                     ensure_ascii=False,  # 中文不转义，体积更小
-                #                     separators=(',', ':'),  # 去除键值对和元素间的空格
-                #                     indent=None  # 无缩进（默认，但显式指定更清晰）
-                #                     )
-                #     self.send_fragmented_message(client_socket, welcome_msg.encode('utf-8'))
+                # 收到消息后自动回复（核心修改点：被动回复逻辑）
+                response = json.dumps({
+                    "Type": "Heartbeat",
+                    "Data": "12312312",
+                    "Timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }, ensure_ascii=False, separators=(',', ':'))
+                self.send_fragmented_message(client_socket, response.encode('utf-8'))
+                
             except UnicodeDecodeError:
                 print("无法解析为UTF-8字符串（可能是二进制数据）")
                 # 发送二进制消息确认
-                response = f"已收到完整二进制消息";
+                response = json.dumps({
+                    "Type": "BinaryResponse",
+                    "Data": f"已收到二进制消息，长度: {len(full_message)}字节"
+                }, ensure_ascii=False, separators=(',', ':'))
                 self.send_fragmented_message(client_socket, response.encode('utf-8'))
             
             print("====================================\n")
@@ -281,20 +254,6 @@ class FragmentedMessageServer:
             except Exception as e:
                 print(f"发送分片 {chunk_index} 失败: {e}")
                 return
-
-    def send_messages_to_clients(self):
-        """服务器主动发送消息给所有客户端的线程"""
-        while self.is_running:
-            try:
-                if self.clients:
-                    msg = input("输入要发送给所有客户端的消息 (空消息跳过): ")
-                    if msg:
-                        data = msg.encode('utf-8')
-                        # 向所有客户端发送消息
-                        for client_socket in self.clients[:]:  # 使用副本避免修改时出错
-                            self.send_fragmented_message(client_socket, data)
-            except Exception as e:
-                print(f"发送消息线程出错: {e}")
 
     def stop(self):
         """停止服务器"""
