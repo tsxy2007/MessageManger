@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -29,4 +29,15 @@ class UMessageMangerBPLibrary : public UBlueprintFunctionLibrary
 
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Execute Sample function", Keywords = "MessageManger sample test testing"), Category = "MessageMangerTesting")
 	static float MessageMangerSampleFunction(float Param);
+
+
+    // 将 UTF-8 编码的 TArray<uint8> 转为 FString
+    UFUNCTION(BlueprintCallable)
+	static FString ConvertUtf8BinaryToString(const TArray<uint8>& BinaryData);
+
+	// 将 const wchar_t* 转换为二进制字节数组
+	static void ConvertWCharToBinary(const wchar_t* WideStr, TArray<uint8>& OutBinaryData);
+
+	UFUNCTION(BlueprintCallable)
+	static void ConvertFStringToBinary(FString Str, TArray<uint8>& outBinaryData);
 };

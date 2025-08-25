@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 
@@ -19,4 +19,5 @@ public:
 
     // 网络字节序转主机字节序
     static uint32_t NetworkToHost32(uint32_t NetworkValue);
+
 };

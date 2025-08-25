@@ -4,6 +4,7 @@
 #include "HAL/PlatformProcess.h"
 #include "TimerManager.h"
 #include "EndianConverter.h"
+#include <MessageMangerBPLibrary.h>
 
 
 void UTCPCommunicationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -17,8 +18,8 @@ void UTCPCommunicationSubsystem::Initialize(FSubsystemCollectionBase& Collection
 
 void UTCPCommunicationSubsystem::Deinitialize()
 {
-    Super::Deinitialize();
     Disconnect();
+    Super::Deinitialize();
 }
 
 bool UTCPCommunicationSubsystem::Connect(const FString& InIPAddress, int32 InPort)
@@ -62,8 +63,8 @@ bool UTCPCommunicationSubsystem::Connect(const FString& InIPAddress, int32 InPor
         UE_LOG(LogTemp, Log, TEXT("Connected to server: %s:%d"), *InIPAddress, InPort);
 
         // 启动接收和发送线程
-        //ReceiveTask = new FAsyncTask<FReceiveWorker>(this, Socket);
-        //ReceiveTask->StartBackgroundTask();
+        ReceiveTask = new FAsyncTask<FReceiveWorker>(this, Socket);
+        ReceiveTask->StartBackgroundTask();
 
         SendTask = new FAsyncTask<FSendWorker>(this, Socket, SendQueue);
         SendTask->StartBackgroundTask();
@@ -160,21 +161,21 @@ void UTCPCommunicationSubsystem::SendHeartbeat()
 
 void UTCPCommunicationSubsystem::CheckHeartbeatTimeout()
 {
-  /*  if (!bIsConnected) return;
+    if (!bIsConnected) return;
 
     FTimespan TimeSinceLastHeartbeat = FDateTime::UtcNow() - LastHeartbeatTime;
     if (TimeSinceLastHeartbeat.GetTotalSeconds() > HeartbeatTimeout)
     {
         UE_LOG(LogTemp, Error, TEXT("Heartbeat timeout, disconnecting..."));
         Disconnect();
-    }*/
+    }
     
 }
 
 void UTCPCommunicationSubsystem::HandleHeartbeat()
 {
     LastHeartbeatTime = FDateTime::UtcNow();
-    UE_LOG(LogTemp, Verbose, TEXT("Received heartbeat from server"));
+    UE_LOG(LogTemp, Log, TEXT("Received heartbeat from server"));
 }
 
 FString UTCPCommunicationSubsystem::SerializeMessage(const FNetworkMessage& Message)
@@ -206,6 +207,7 @@ bool UTCPCommunicationSubsystem::DeserializeMessage(const FString& JsonString, F
     return false;
 }
 
+
 void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
 {
     // 将新数据添加到缓冲区
@@ -220,29 +222,8 @@ void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
             // 数据不足，等待更多数据
             break;
         }
-        
-        // 解析消息长度
-        uint32 MessageLength = 0;
-        memcpy(&MessageLength, ReceiveBuffer.GetData(), 4);
-        // 转换为大端序
-        //MessageLength = FPlatformMisc::NetworkToHostLong(MessageLength);
-        
-        // 检查是否有完整的消息
-        if (ReceiveBuffer.Num() < (int32)(4 + MessageLength))
-        {
-            // 消息不完整，等待更多数据
-            break;
-        }
-        
-        // 提取消息内容
-        TArray<uint8> MessageData;
-        MessageData.Append(ReceiveBuffer.GetData() + 4, MessageLength);
-        
-        // 从缓冲区移除已处理的消息
-        ReceiveBuffer.RemoveAt(0, 4 + MessageLength);
-        
         // 将字节转换为字符串
-        FString MessageString = FString(MessageData.Num(), (TCHAR*)MessageData.GetData());
+        FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(Data);
         
         // 反序列化消息
         FNetworkMessage NetworkMessage;
@@ -286,28 +267,122 @@ void FReceiveWorker::DoWork()
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Receive worker started"));
+    // 定义最大接收分片大小为64KB (65536字节)
+    const int32 MAX_CHUNK_SIZE = 65536;
+    // 分片头部结构 (与发送端对应)
+    struct FChunkHeader
+    {
+        uint32 MessageId = 0;
+        uint32 TotalLength = 0;
+        uint32 ChunkIndex = 0;
+        uint8 IsLastChunk = 0;
+    };
+    const int32 HEADER_SIZE = sizeof(FChunkHeader);
+
+    // 用于缓存分片数据的结构
+    struct FPartialMessage
+    {
+        TArray<uint8> Data;          // 完整数据缓冲区
+        int32 ReceivedChunks;       // 已接收的分片数
+        int32 TotalChunks;          // 总分片数
+        FDateTime LastActivityTime; // 最后活动时间，用于超时处理
+    };
+
+    // 存储所有部分接收的消息 (MessageId -> 部分消息)
+    TMap<uint32, FPartialMessage> PartialMessages;
+
+    UE_LOG(LogTemp, Log, TEXT("Receive worker started with chunking (max %d bytes per chunk)"), MAX_CHUNK_SIZE);
 
     while (Subsystem->IsConnected() && Socket.IsValid())
     {
-        // 读取数据
-        //TArray<uint8> ReceiveData;
-
-        FArrayReader ReceiveData = FArrayReader(true);
-        
-        uint32 Size;
-        if (Socket->HasPendingData(Size))
+        uint32 PendingDataSize;
+        if (Socket->HasPendingData(PendingDataSize))
         {
-            //ReceiveData.SetNumUninitialized(FMath::Min(Size, 65536u)); // 一次最多读取64KB
-            ReceiveData.SetNumUninitialized(FMath::Min(Size, 65536u));
+            // 一次最多读取64KB数据
+            int32 ReadSize = FMath::Min(PendingDataSize, (uint32)MAX_CHUNK_SIZE);
+            FArrayReader ReceiveData = FArrayReader(true);
+            ReceiveData.SetNumUninitialized(ReadSize);
 
-            int32 Read = 0;
-            if (Socket->Recv(ReceiveData.GetData(), ReceiveData.Num(), Read))
+            int32 BytesRead = 0;
+            if (Socket->Recv(ReceiveData.GetData(), ReadSize, BytesRead) && BytesRead > 0)
             {
-                if (Read > 0)
+                ReceiveData.SetNum(BytesRead);
+
+                // 检查是否有足够的数据容纳头部
+                if (BytesRead < HEADER_SIZE)
                 {
-                    ReceiveData.SetNum(Read);
-                    Subsystem->ProcessReceivedData(ReceiveData);
+                    UE_LOG(LogTemp, Error, TEXT("Received data too small for header (size: %d)"), BytesRead);
+                    break;
+                }
+
+                // 解析头部信息
+                FChunkHeader Header;
+                FMemory::Memcpy(&Header, ReceiveData.GetData(), HEADER_SIZE);
+
+                // 提取实际数据部分
+                TArray<uint8> ChunkData;
+                ChunkData.Append(ReceiveData.GetData() + HEADER_SIZE, BytesRead - HEADER_SIZE);
+
+                UE_LOG(LogTemp, Log, TEXT("Received chunk %d (MessageId: %u, size: %d bytes)"),
+                    Header.ChunkIndex, Header.MessageId, ChunkData.Num());
+
+                // 检查是否是新消息
+                if (!PartialMessages.Contains(Header.MessageId))
+                {
+                    // 计算总分片数
+                    int32 TotalChunks = FMath::CeilToInt((float)Header.TotalLength / MAX_CHUNK_SIZE);
+
+                    // 初始化新的部分消息
+                    FPartialMessage NewMessage;
+                    NewMessage.Data.SetNumUninitialized(Header.TotalLength);
+                    NewMessage.ReceivedChunks = 0;
+                    NewMessage.TotalChunks = TotalChunks;
+                    NewMessage.LastActivityTime = FDateTime::UtcNow();
+
+                    PartialMessages.Add(Header.MessageId, NewMessage);
+                }
+
+                // 获取当前消息的缓存
+                FPartialMessage& CurrentMessage = PartialMessages[Header.MessageId];
+
+                // 验证分片有效性
+                if (Header.ChunkIndex >= (uint32)CurrentMessage.TotalChunks)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Invalid chunk index %d for message %u (total chunks: %d)"),
+                        Header.ChunkIndex, Header.MessageId, CurrentMessage.TotalChunks);
+                    PartialMessages.Remove(Header.MessageId);
+                    continue;
+                }
+
+                // 计算当前分片在完整数据中的偏移量
+                int32 ChunkOffset = Header.ChunkIndex * MAX_CHUNK_SIZE;
+
+                // 确保偏移量不超过总长度
+                if (ChunkOffset + ChunkData.Num() > CurrentMessage.Data.Num())
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Chunk data exceeds message size for message %u"), Header.MessageId);
+                    PartialMessages.Remove(Header.MessageId);
+                    continue;
+                }
+
+                // 将分片数据复制到完整缓冲区
+                FMemory::Memcpy(CurrentMessage.Data.GetData() + ChunkOffset, ChunkData.GetData(), ChunkData.Num());
+                CurrentMessage.ReceivedChunks++;
+                CurrentMessage.LastActivityTime = FDateTime::UtcNow();
+
+                // 检查是否接收完所有分片
+                if (Header.IsLastChunk && CurrentMessage.ReceivedChunks == CurrentMessage.TotalChunks)
+                {
+                    UE_LOG(LogTemp, Log, TEXT("Message %u fully received (%d bytes)"),
+                        Header.MessageId, CurrentMessage.Data.Num());
+
+                    // 将完整数据传递给处理函数
+                    FArrayReader CompleteData = FArrayReader(true);
+                    CompleteData.Append(CurrentMessage.Data);
+                    Subsystem->ProcessReceivedData(CompleteData);
+
+                    // 从缓存中移除
+                    PartialMessages.Remove(Header.MessageId);
                 }
             }
             else
@@ -317,6 +392,22 @@ void FReceiveWorker::DoWork()
                 Subsystem->Disconnect();
                 break;
             }
+        }
+        
+
+        // 清理超时的部分消息（5秒超时）
+        TArray<uint32> ExpiredMessages;
+        for (const auto& Pair : PartialMessages)
+        {
+            if (FDateTime::UtcNow() - Pair.Value.LastActivityTime > FTimespan::FromSeconds(5))
+            {
+                ExpiredMessages.Add(Pair.Key);
+            }
+        }
+        for (uint32 MsgId : ExpiredMessages)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Message %u expired (incomplete chunks)"), MsgId);
+            PartialMessages.Remove(MsgId);
         }
 
         // 短暂休眠，减少CPU占用
@@ -334,7 +425,10 @@ void FSendWorker::DoWork()
         return;
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Send worker started"));
+    // 定义最大分片大小为64KB (65536字节)
+    const int32 MAX_CHUNK_SIZE = 65536;
+
+    UE_LOG(LogTemp, Log, TEXT("Send worker started with chunking (max %d bytes per chunk)"), MAX_CHUNK_SIZE);
 
     while (Subsystem->IsConnected() && Socket.IsValid())
     {
@@ -344,29 +438,74 @@ void FSendWorker::DoWork()
         {
             // 序列化消息
             FString JsonString = Subsystem->SerializeMessage(Message);
-            
-            // 转换为字节数组
-            TArray<uint8> Data;
-            Data.Append((uint8*)TCHAR_TO_UTF8(*JsonString), JsonString.Len());
 
-            // 添加长度前缀（大端序）
-            uint32 Length = Data.Num() + sizeof(uint32);
-            FArrayWriter MessageData = FArrayWriter(true);
-            MessageData << Length;
-            MessageData << JsonString;
-
-
-            uint32 MessageLength1 = 0;
-            memcpy(&MessageLength1, MessageData.GetData(), sizeof(uint32));
-
-            UE_LOG(LogTemp, Log, TEXT("FSendWorker::send data MessageLength1 = %d"), MessageLength1);
-            // 发送数据
-            int32 BytesSent = 0;
-            if (!Socket->Send(MessageData.GetData(), MessageData.Num(), BytesSent) || BytesSent != MessageData.Num())
+            // 转换为UTF-8字节流
+            TArray<uint8> OutMsgData;
+            UMessageMangerBPLibrary::ConvertFStringToBinary(JsonString, OutMsgData);
+            int32 TotalDataLength = OutMsgData.Num();
+            // 如果数据为空则跳过
+            if (TotalDataLength <= 0)
             {
-                UE_LOG(LogTemp, Error, TEXT("Failed to send data. Sent %d of %d bytes"), BytesSent, MessageData.Num());
-                Subsystem->Disconnect();
-                break;
+                UE_LOG(LogTemp, Warning, TEXT("Skipping empty message"));
+                continue;
+            }
+
+            // 计算总分片数
+            int32 TotalChunks = FMath::CeilToInt((float)TotalDataLength / MAX_CHUNK_SIZE);
+            UE_LOG(LogTemp, Log, TEXT("Sending message as %d chunks (total %d bytes)"), TotalChunks, TotalDataLength);
+
+            // 生成消息唯一ID，用于接收端重组
+            uint32 MessageId = FMath::Rand(); // 实际项目中应使用更可靠的ID生成方式
+
+            // 分片发送
+            for (int32 ChunkIndex = 0; ChunkIndex < TotalChunks; ChunkIndex++)
+            {
+                // 计算当前分片的偏移量和大小
+                int32 ChunkOffset = ChunkIndex * MAX_CHUNK_SIZE;
+                int32 ChunkSize = FMath::Min(MAX_CHUNK_SIZE, TotalDataLength - ChunkOffset);
+
+                // 构建分片头部 (共13字节: 4字节消息ID + 4字节总长度 + 4字节分片索引 + 1字节是否最后分片)
+                struct FChunkHeader
+                {
+                    uint32 MessageId;
+                    uint32 TotalLength;
+                    uint32 ChunkIndex;
+                    uint8 IsLastChunk;
+                };
+
+                FChunkHeader Header;
+                Header.MessageId = MessageId;
+                Header.TotalLength = TotalDataLength;
+                Header.ChunkIndex = ChunkIndex;
+                Header.IsLastChunk = (ChunkIndex == TotalChunks - 1) ? 1 : 0;
+
+                // 准备发送缓冲区
+                FArrayWriter ChunkData = FArrayWriter(true);
+
+                // 写入头部
+                ChunkData.Serialize(&Header, sizeof(FChunkHeader));
+
+                // 写入当前分片的数据
+                ChunkData.Serialize((void*)(OutMsgData.GetData() + ChunkOffset), ChunkSize);
+
+                // 发送当前分片
+                int32 BytesSent = 0;
+                bool bSuccess = Socket->Send(ChunkData.GetData(), ChunkData.Num(), BytesSent);
+
+                if (!bSuccess || BytesSent != ChunkData.Num())
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to send chunk %d. Sent %d of %d bytes"),
+                        ChunkIndex, BytesSent, ChunkData.Num());
+                    Subsystem->Disconnect();
+                    break;
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Log, TEXT("Send chunk success %d send %d of %d bytes!"), ChunkIndex, ChunkData.Num(), BytesSent);
+                }
+
+                UE_LOG(LogTemp, Log, TEXT("Sent chunk %d/%d (size: %d bytes)"),
+                    ChunkIndex + 1, TotalChunks, ChunkSize);
             }
         }
 
