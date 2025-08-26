@@ -91,11 +91,24 @@ void UTCPCommunicationSubsystem::Disconnect()
     if (bIsConnected && Socket.IsValid())
     {
         // 停止心跳
-        GetWorld()->GetTimerManager().ClearTimer(HeartbeatTimer);
+        UWorld* World = GetWorld();
+        if (World)
+        {
+            World->GetTimerManager().ClearTimer(HeartbeatTimer);
+        }
         
         // 关闭Socket
         Socket->Close();
         Socket.Reset();
+        // 清空队列
+        FNetworkMessage Dummy;
+        while (SendQueue.Dequeue(Dummy)) {}
+
+        bIsConnected = false;
+        UE_LOG(LogTemp, Log, TEXT("Disconnected from server"));
+
+        // 通知连接状态变化
+        NotifyConnectionStatusChanged(false);
 
         // 等待线程结束
         if (ReceiveTask)
@@ -112,15 +125,7 @@ void UTCPCommunicationSubsystem::Disconnect()
             SendTask = nullptr;
         }
 
-        // 清空队列
-        FNetworkMessage Dummy;
-        while (SendQueue.Dequeue(Dummy)) {}
 
-        bIsConnected = false;
-        UE_LOG(LogTemp, Log, TEXT("Disconnected from server"));
-        
-        // 通知连接状态变化
-        NotifyConnectionStatusChanged(false);
     }
 }
 
@@ -212,7 +217,6 @@ void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
 {
     // 将新数据添加到缓冲区
     ReceiveBuffer.Append(Data);
-    
     // 处理缓冲区中的完整消息
     while (true)
     {
@@ -223,8 +227,8 @@ void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
             break;
         }
         // 将字节转换为字符串
-        FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(Data);
-        
+        FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(ReceiveBuffer);
+        ReceiveBuffer.Empty();
         // 反序列化消息
         FNetworkMessage NetworkMessage;
         if (DeserializeMessage(MessageString, NetworkMessage))
@@ -389,7 +393,11 @@ void FReceiveWorker::DoWork()
             {
                 // 接收失败，断开连接
                 UE_LOG(LogTemp, Error, TEXT("Failed to receive data"));
-                Subsystem->Disconnect();
+                
+                AsyncTask(ENamedThreads::GameThread, [this]()
+                {
+                        Subsystem->Disconnect();
+                });
                 break;
             }
         }
@@ -496,7 +504,11 @@ void FSendWorker::DoWork()
                 {
                     UE_LOG(LogTemp, Error, TEXT("Failed to send chunk %d. Sent %d of %d bytes"),
                         ChunkIndex, BytesSent, ChunkData.Num());
-                    Subsystem->Disconnect();
+                    AsyncTask(ENamedThreads::GameThread, [this]()
+                    {
+                            Subsystem->Disconnect();
+					});
+                    
                     break;
                 }
                 else
