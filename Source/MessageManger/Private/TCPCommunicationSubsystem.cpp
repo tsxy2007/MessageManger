@@ -217,38 +217,33 @@ void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
 {
     // 将新数据添加到缓冲区
     ReceiveBuffer.Append(Data);
-    // 处理缓冲区中的完整消息
-    while (true)
+    // 消息格式：4字节长度前缀（大端序） + 消息内容
+    if (ReceiveBuffer.Num() < 4)
     {
-        // 消息格式：4字节长度前缀（大端序） + 消息内容
-        if (ReceiveBuffer.Num() < 4)
+        // 数据不足，等待更多数据
+        return;
+    }
+    // 将字节转换为字符串
+    FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(ReceiveBuffer);
+    ReceiveBuffer.Empty();
+    // 反序列化消息
+    FNetworkMessage NetworkMessage;
+    if (DeserializeMessage(MessageString, NetworkMessage))
+    {
+        // 处理心跳消息
+        if (NetworkMessage.MessageType == TEXT("Heartbeat"))
         {
-            // 数据不足，等待更多数据
-            break;
+            HandleHeartbeat();
         }
-        // 将字节转换为字符串
-        FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(ReceiveBuffer);
-        ReceiveBuffer.Empty();
-        // 反序列化消息
-        FNetworkMessage NetworkMessage;
-        if (DeserializeMessage(MessageString, NetworkMessage))
-        {
-            // 处理心跳消息
-            if (NetworkMessage.MessageType == TEXT("Heartbeat"))
-            {
-                HandleHeartbeat();
-                continue;
-            }
-            
-            // 触发消息接收回调（在游戏线程中执行）
-            AsyncTask(ENamedThreads::GameThread, [this, NetworkMessage]()
-            {
-                if (MessageReceivedDelegate.IsBound())
-                {
-                    MessageReceivedDelegate.Execute(NetworkMessage);
-                }
-            });
-        }
+
+        // 触发消息接收回调（在游戏线程中执行）
+        AsyncTask(ENamedThreads::GameThread, [this, NetworkMessage]()
+         {
+             if (MessageReceivedDelegate.IsBound())
+             {
+                 MessageReceivedDelegate.Execute(NetworkMessage);
+             }
+         });
     }
 }
 
