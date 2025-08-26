@@ -68,6 +68,9 @@ public:
     
     // 处理接收到的原始数据
     void ProcessReceivedData(const TArray<uint8>& Data);
+
+    // 广播消息
+	void BroadcastMessage(const FNetworkMessage& Message);
 private:
     // TCP套接字
     TSharedPtr<FSocket> Socket;

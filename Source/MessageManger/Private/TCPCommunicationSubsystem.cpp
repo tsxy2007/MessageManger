@@ -226,24 +226,29 @@ void UTCPCommunicationSubsystem::ProcessReceivedData(const TArray<uint8>& Data)
     // 将字节转换为字符串
     FString MessageString = UMessageMangerBPLibrary::ConvertUtf8BinaryToString(ReceiveBuffer);
     ReceiveBuffer.Empty();
-    // 反序列化消息
-    FNetworkMessage NetworkMessage;
-    if (DeserializeMessage(MessageString, NetworkMessage))
+    // 触发消息接收回调（在游戏线程中执行）
+    AsyncTask(ENamedThreads::GameThread, [this, MessageString]()
     {
-        // 处理心跳消息
-        if (NetworkMessage.MessageType == TEXT("Heartbeat"))
+        // 反序列化消息
+        FNetworkMessage NetworkMessage;
+        if (DeserializeMessage(MessageString, NetworkMessage))
         {
-            HandleHeartbeat();
+            BroadcastMessage(NetworkMessage);
         }
+    });
+}
 
-        // 触发消息接收回调（在游戏线程中执行）
-        AsyncTask(ENamedThreads::GameThread, [this, NetworkMessage]()
-         {
-             if (MessageReceivedDelegate.IsBound())
-             {
-                 MessageReceivedDelegate.Execute(NetworkMessage);
-             }
-         });
+void UTCPCommunicationSubsystem::BroadcastMessage(const FNetworkMessage& NetworkMessage)
+{
+    // 处理心跳消息
+    if (NetworkMessage.MessageType == TEXT("Heartbeat"))
+    {
+        HandleHeartbeat();
+        return;
+    }
+    if (MessageReceivedDelegate.IsBound())
+    {
+        MessageReceivedDelegate.Execute(NetworkMessage);
     }
 }
 
