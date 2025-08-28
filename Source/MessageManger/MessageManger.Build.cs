@@ -1,5 +1,6 @@
 // Some copyright should be here...
 
+using System.IO;
 using UnrealBuildTool;
 
 public class MessageManger : ModuleRules
@@ -7,19 +8,21 @@ public class MessageManger : ModuleRules
 	public MessageManger(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
-		PublicIncludePaths.AddRange(
+
+        PublicIncludePaths.AddRange(
 			new string[] {
 				// ... add public include paths required here ...
-			}
+            }
 			);
 				
 		
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				// ... add other private include paths required here ...
-			}
-			);
+				"MessageManger/Public",
+
+            }
+            );
 			
 		
 		PublicDependencyModuleNames.AddRange(
@@ -29,6 +32,8 @@ public class MessageManger : ModuleRules
 				"Sockets",
 				"Json",
 				"Networking",
+                "ProtobufLibrary",
+				"Engine",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
@@ -52,5 +57,7 @@ public class MessageManger : ModuleRules
 				// ... add any modules that your module loads dynamically here ...
 			}
 			);
-	}
+
+
+    }
 }

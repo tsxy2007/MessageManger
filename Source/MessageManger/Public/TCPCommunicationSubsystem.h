@@ -1,7 +1,7 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
-#include "Subsystems/EngineSubsystem.h"
+#include "Subsystems/GameInstanceSubsystem.h"
 #include "Async/AsyncWork.h"
 #include "Runtime/Networking/Public/Networking.h"
 #include "Runtime/Json/Public/Serialization/JsonSerializer.h"
