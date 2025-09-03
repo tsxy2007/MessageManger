@@ -129,7 +129,28 @@ void UTCPCommunicationSubsystem::Disconnect()
     }
 }
 
-bool UTCPCommunicationSubsystem::SendMessage(const FNetworkMessage& Message)
+DEFINE_FUNCTION(UTCPCommunicationSubsystem::execK2_SendMessage)
+{
+    P_GET_STRUCT(FString, MsgType);
+
+    Stack.MostRecentPropertyAddress = nullptr;
+    Stack.StepCompiledIn<FStructProperty>(nullptr);
+    void* MessagePtr = Stack.MostRecentPropertyAddress;
+    FStructProperty* StructProp = CastField<FStructProperty>(Stack.MostRecentProperty);
+
+    P_FINISH;
+
+    if (ensure((StructProp != nullptr) && (StructProp->Struct != nullptr) && (MessagePtr != nullptr)))
+    {
+        FString Json;
+        if (FJsonObjectConverter::UStructToJsonObjectString(StructProp->Struct, MessagePtr, Json, 0, 0, 0, nullptr, false))
+        {
+            P_THIS->SendMessageInternal(FNetworkMessage(MsgType, Json));
+        }
+    }
+}
+
+bool UTCPCommunicationSubsystem::SendMessageInternal(const FNetworkMessage& Message)
 {
     if (!bIsConnected || !Socket.IsValid())
     {
@@ -156,9 +177,10 @@ void UTCPCommunicationSubsystem::SendHeartbeat()
 {
     if (!bIsConnected) return;
     
+    //
     // 发送心跳消息
-    FNetworkMessage HeartbeatMsg(TEXT("Heartbeat"), TEXT("{}"));
-    SendMessage(HeartbeatMsg);
+    FNetworkHeardbeatMsg heardbeat;
+    SendMessage(TEXT("Heartbeat"), heardbeat);
     
     // 检查是否超时
     CheckHeartbeatTimeout();

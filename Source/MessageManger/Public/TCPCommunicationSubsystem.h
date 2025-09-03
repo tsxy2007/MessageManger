@@ -5,6 +5,7 @@
 #include "Async/AsyncWork.h"
 #include "Runtime/Networking/Public/Networking.h"
 #include "Runtime/Json/Public/Serialization/JsonSerializer.h"
+#include <JsonObjectConverter.h>
 #include "TCPCommunicationSubsystem.generated.h"
 
 // 消息结构体
@@ -22,6 +23,15 @@ struct FNetworkMessage
     FNetworkMessage() {}
     FNetworkMessage(const FString& InType, const FString& InData) 
         : MessageType(InType), JsonData(InData) {}
+};
+
+USTRUCT(BlueprintType)
+struct FNetworkHeardbeatMsg
+{
+    GENERATED_BODY();
+
+    UPROPERTY(BlueprintReadWrite, Category = "Network")
+    FString Msg;
 };
 
 // 消息处理委托
@@ -46,9 +56,24 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Network|TCP")
     void Disconnect();
 
+    UFUNCTION(BlueprintCallable, CustomThunk, Category = Messaging, meta = (CustomStructureParam = "Message", AllowAbstract = "false", DisplayName = "Send Message"))
+    void K2_SendMessage(FString MsgType, const int32& Message);
+
+    DECLARE_FUNCTION(execK2_SendMessage);
+   
     // 发送消息
-    UFUNCTION(BlueprintCallable, Category = "Network|TCP")
-    bool SendMessage(const FNetworkMessage& Message);
+    template<typename MessageType>
+    bool SendMessage(FString MsgType, const MessageType& Message)
+    {
+        FString Json;
+        if (FJsonObjectConverter::UStructToJsonObjectString(MessageType::StaticStruct(),&Message, Json, 0, 0, 0, nullptr, false))
+        {
+            return SendMessageInternal(FNetworkMessage(MsgType, Json));
+        }
+        return false;
+    }
+
+    bool SendMessageInternal(const FNetworkMessage& Message);
 
     // 注册消息处理回调
     void RegisterMessageHandler(FOnMessageReceived InHandler);
